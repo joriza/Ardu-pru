@@ -1,3 +1,7 @@
+/*
+ * Prueba con display 7 segmentos
+ */
+
 #include "TM1637.h"
 #define CLK 3    
 #define DIO 2
