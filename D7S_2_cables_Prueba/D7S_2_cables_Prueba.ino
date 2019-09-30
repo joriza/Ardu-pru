@@ -3,7 +3,7 @@
 #define DIO 2
 
 TM1637 Display1(CLK,DIO);
-int8_t Digits[] = {7,3,5,2};
+int8_t Digits[] = {1,2,3,4};
 
 void setup()
    {  
