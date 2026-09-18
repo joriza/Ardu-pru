@@ -1,0 +1,230 @@
+<!-- ============================================================
+     index.html — Frontend del CRUD (zz-js01)
+
+         Sin frameworks: HTML + CSS + JavaScript puro del navegador.
+         Se comunica con el backend únicamente por HTTP usando fetch(),
+         siempre con rutas relativas ("/api/..."), por eso este archivo
+         debe ser servido por Express desde public/ (entrando por
+         http://localhost:3000/) y NO abierto como
+         archivo local (file://...).
+
+         Cubre el CRUD completo contra /api/productos:
+           crear (POST) · listar (GET) · editar (PUT) · borrar (DELETE)
+         ============================================================ -->
+
+<form id="formulario-producto">
+  <!-- required: el navegador valida solo que no esté vacío -->
+  <input type="text" id="nombre" placeholder="Nombre del producto" required>
+  <!-- step 0.01: admite decimales (precios con centavos) -->
+  <input type="number" step="0.01" id="precio" placeholder="Precio" required>
+      <!-- type="submit": al presionarlo se dispara el evento "submit" del form.
+           El texto lo cambia JavaScript: "Guardar" crea, "Guardar cambios" edita. -->
+      <button type="submit" id="boton-guardar">Guardar</button>
+      <!-- type="button": NO dispara el submit; sirve para cancelar la edición.
+           hidden lo mantiene invisible hasta entrar en modo edición. -->
+      <button type="button" id="boton-cancelar" hidden>Cancelar</button>
+</form>
+
+<h2>Productos guardados</h2>
+<table>
+  <thead>
+    <tr><th>ID</th><th>Nombre</th><th>Precio</th><th>Acción</th></tr>
+  </thead>
+  <!-- este tbody se llena dinámicamente desde JavaScript -->
+  <tbody id="lista-productos"></tbody>
+</table>
+
+<style>
+  form { margin-bottom: 16px; font-family: sans-serif; }
+  button { margin-right: 4px; }
+  table { border-collapse: collapse; font-family: sans-serif; }
+  th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: left; }
+  th { background: #f0f0f0; }
+</style>
+
+<script>
+  // Referencias al DOM (la página). Se buscan una vez y se guardan
+  // en constantes: más legible y rápido que buscarlas en cada uso.
+  const formulario = document.getElementById('formulario-producto');
+  const tbody = document.getElementById('lista-productos');
+  const botonGuardar = document.getElementById('boton-guardar');
+  const botonCancelar = document.getElementById('boton-cancelar');
+
+  // Estado del formulario. idEnEdicion: null = creando un producto
+  // nuevo; un número = editando ese id. Esta única variable decide
+  // si el submit manda POST (crear) o PUT (actualizar).
+  let idEnEdicion = null;
+  // Última lista traída del backend: editarProducto() la usa para
+  // rellenar el formulario sin volver a pedir ese producto.
+  let productosActuales = [];
+
+  // addEventListener: "cuando ocurra este evento, ejecutá esta función".
+  // async: habilita usar await dentro (JavaScript sigue acá mientras
+  // espera, sin congelar la página).
+  formulario.addEventListener('submit', async (evento) => {
+    // preventDefault() cancela el comportamiento por defecto del
+    // submit (recargar la página). Sin esto, la recarga cortaría
+    // nuestro JavaScript antes de llegar a enviar el pedido.
+    evento.preventDefault();
+
+    // .value siempre devuelve texto; para el precio hace falta
+    // parseFloat() y así trabajar con un número de verdad.
+    const nombre = document.getElementById('nombre').value;
+    const precio = parseFloat(document.getElementById('precio').value);
+
+    // await: espera el resultado del guardado (POST o PUT, según
+    // el modo) antes de continuar. Si falla, guardado es false y
+    // el formulario NO se limpia: no se pierde lo escrito por un
+    // error del servidor.
+    const guardado = await guardarProducto(nombre, precio);
+    if (guardado) {
+      // salirDeEdicion() limpia el formulario Y devuelve el estado a
+      // "creando" (texto del botón incluido). Sirve para ambos caminos.
+      salirDeEdicion();
+      // Ciclo POST -> GET: recién ahora que el producto está en la
+      // base, se pide la lista actualizada. El await garantiza ese
+      // orden (sin él, ambos correrían en paralelo).
+      await cargarProductos();
+    }
+  });
+
+  // Envía el producto al backend: POST para crear, PUT para editar.
+  // Devuelve true si salió bien.
+  // try/catch: si el servidor no responde (caído, red cortada), fetch
+  // lanza una excepción; la atrapamos para que la página no se rompa.
+  async function guardarProducto(nombre, precio) {
+    try {
+      // ¿Creando o editando? Misma ruta base; cambia el método y, al
+      // editar, el id viaja en la URL: PUT /api/productos/7.
+      const creando = idEnEdicion === null;
+      const url = creando ? '/api/productos' : `/api/productos/${idEnEdicion}`;
+      const respuesta = await fetch(url, {
+        method: creando ? 'POST' : 'PUT',
+        // El backend necesita saber que el body es JSON
+        headers: { 'Content-Type': 'application/json' },
+        // fetch solo envía texto: el objeto debe serializarse
+        body: JSON.stringify({ nombre, precio })
+      });
+      // Etapa 9: el código de respuesta queda visible en la consola
+      // del navegador (F12 → Consola) en cada interacción: así se
+      // puede comparar el código esperado de la API (200, 201, 400,
+      // 404...) con el que realmente llegó.
+      console.log(`← Código de respuesta: ${respuesta.status}`);
+      // respuesta.ok significa código 2xx. OJO: fetch NO lanza
+      // excepción ante un 404/500; los códigos de error HTTP hay
+      // que revisarlos a mano, como acá.
+      if (!respuesta.ok) {
+        console.error('El servidor rechazó el guardado:', respuesta.status);
+        return false;
+      }
+      const datos = await respuesta.json(); // { id, nombre, precio }
+      console.log('Guardado con id:', datos.id);
+      return true;
+    } catch (error) {
+      console.error('No se pudo contactar al servidor:', error);
+      return false;
+    }
+  }
+
+  // Entra en modo edición: carga los valores del producto elegido en
+  // el formulario y cambia el estado global. A partir de acá, Guardar
+  // hace PUT en vez de POST.
+  function editarProducto(id) {
+    // find() devuelve el primer elemento que cumple la condición
+    // (o undefined si no está): se busca en la lista ya cargada.
+    const producto = productosActuales.find((p) => p.id === id);
+    if (!producto) return;
+    idEnEdicion = id;
+    document.getElementById('nombre').value = producto.nombre;
+    document.getElementById('precio').value = producto.precio;
+    botonGuardar.textContent = 'Guardar cambios';
+    botonCancelar.hidden = false; // ahora sí se ve el botón Cancelar
+  }
+
+  // Sale del modo edición y deja el formulario como al inicio.
+  // La usan tanto el guardado exitoso como el botón Cancelar.
+  function salirDeEdicion() {
+    idEnEdicion = null;
+    formulario.reset();
+    botonGuardar.textContent = 'Guardar';
+    botonCancelar.hidden = true;
+  }
+
+  // Cancelar: como es type="button", no dispara el submit del form.
+  botonCancelar.addEventListener('click', salirDeEdicion);
+
+      // Borra un producto vía DELETE. El id viaja en la URL (parámetro
+      // de ruta), igual que en el backend: /api/productos/7.
+      async function borrarProducto(id) {
+        // confirm() muestra un diálogo nativo del navegador y devuelve
+        // true/false según lo que responda el usuario. Es la barrera mínima
+        // contra un clic accidental sobre "Borrar".
+        if (!confirm(`¿Borrar el producto #${id}?`)) return;
+        try {
+          const respuesta = await fetch(`/api/productos/${id}`, {
+            method: 'DELETE'
+          });
+          console.log(`← Código de respuesta: ${respuesta.status}`);
+          // Igual que en guardarProducto: fetch no lanza excepción ante
+          // 404/500; hay que revisar respuesta.ok a mano.
+          if (!respuesta.ok) {
+            console.error('El servidor rechazó el borrado:', respuesta.status);
+            return;
+          }
+          // Si justo estábamos editando el producto recién borrado,
+          // salimos del modo edición (el formulario ya no tiene dueño).
+          if (idEnEdicion === id) salirDeEdicion();
+          // Mismo patrón del ciclo POST → GET: mutación y después refresco.
+          await cargarProductos();
+        } catch (error) {
+          console.error('No se pudo contactar al servidor:', error);
+        }
+      }
+
+      // Trae todos los productos (GET) y redibuja la tabla completa.
+  // Enfoque simple y suficiente para esta cantidad de datos.
+  async function cargarProductos() {
+    const respuesta = await fetch('/api/productos'); // GET es el default
+    console.log(`← Código de respuesta: ${respuesta.status}`);
+    const productos = await respuesta.json(); // JSON -> array de objetos
+    // Se guarda la lista: editarProducto() la usa para rellenar el
+    // formulario con los valores actuales del producto elegido.
+    productosActuales = productos;
+
+    // Vaciar y redibujar todo. Con muchos registros se optimizaría
+    // actualizando solo lo que cambió.
+    tbody.innerHTML = '';
+    for (const producto of productos) {
+      const fila = document.createElement('tr');
+      // toFixed(2): formato monetario, siempre 2 decimales
+      const valores = [producto.id, producto.nombre, `$ ${Number(producto.precio).toFixed(2)}`];
+      for (const valor of valores) {
+        const celda = document.createElement('td');
+        // textContent inserta TEXTO plano: nunca interpreta HTML.
+        // Usar innerHTML con datos del usuario permitiría XSS
+        // (un nombre "<script>..." se ejecutaría). Hacelo costumbre.
+        celda.textContent = valor;
+        fila.appendChild(celda);
+      }
+      // Columna de acción: un botón "Borrar" por fila. También se arma
+      // con createElement + textContent: el id numérico no es peligroso,
+      // pero el hábito de no concatenar HTML con datos sí lo es.
+      const celdaAccion = document.createElement('td');
+      const botonEditar = document.createElement('button');
+      botonEditar.textContent = 'Editar';
+      botonEditar.addEventListener('click', () => editarProducto(producto.id));
+      celdaAccion.appendChild(botonEditar);
+      const botonBorrar = document.createElement('button');
+      botonBorrar.textContent = 'Borrar';
+      // La arrow function hace de "clausura": guarda el producto.id de
+      // ESTA fila y solo se ejecuta cuando se hace clic en ese botón.
+      botonBorrar.addEventListener('click', () => borrarProducto(producto.id));
+      celdaAccion.appendChild(botonBorrar);
+      fila.appendChild(celdaAccion);
+      tbody.appendChild(fila);
+    }
+  }
+
+  // Al abrir la página ya mostramos lo que hay en la base.
+  cargarProductos();
+</script>

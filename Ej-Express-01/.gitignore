@@ -1,0 +1,10 @@
+# Local Pi runtime state
+.atl/
+.codegraph/
+.pi/
+
+# Dependencies
+node_modules/
+
+# Runtime data (SQLite)
+*.db
